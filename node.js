@@ -2,7 +2,15 @@ const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const bodyParser = require('body-parser');
+const puppeteer = require('puppeteer-core');
 
+(async () => {
+    const browser = await puppeteer.launch({
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        headless: true  // Optional: Run in headless mode
+    });
+    // Your Puppeteer code here
+})();
 
 const app = express();
 require('dotenv').config();
