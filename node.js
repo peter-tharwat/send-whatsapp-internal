@@ -25,7 +25,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(verifySecretHeader);
 
-app.get('/get-qr/:userId', (req, res) => {
+app.get('/get-qr/:userId', async (req, res) => {
     const userId = req.params.userId;
 
     if (clients[userId] && clients[userId].isReady) {
@@ -37,29 +37,34 @@ app.get('/get-qr/:userId', (req, res) => {
         authStrategy: new LocalAuth({ clientId: userId }),
         puppeteer: {
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
         }
     });
 
     clients[userId] = { client, isReady: false };
 
-    client.on('qr', (qr) => {
+    try {
+        const qr = await generateQRCodeWithRetries(client);
         qrcode.toDataURL(qr, (err, url) => {
+            if (err) {
+                return res.status(500).json({ status: 'error', message: 'Failed to generate QR code' });
+            }
             res.json({ qr: url });
         });
-    });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: 'QR generation failed after retries', error: error.message });
+    }
 
     client.on('ready', () => {
-        console.log(`Client for user ${userId} is ready!`);
         clients[userId].isReady = true;
     });
 
     client.on('auth_failure', () => {
-        console.log(`Authentication failure for user ${userId}`);
         clients[userId].isReady = false;
     });
 
     client.initialize();
+
 });
 
 app.get('/check-active/:userId', (req, res) => {
