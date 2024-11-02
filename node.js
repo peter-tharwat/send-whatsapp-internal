@@ -25,6 +25,23 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(verifySecretHeader);
 
+async function generateQRCodeWithRetries(client, maxRetries = 3) {
+    let attempts = 0;
+    while (attempts < maxRetries) {
+        try {
+            const qr = await new Promise((resolve, reject) => {
+                client.on('qr', resolve);
+                client.on('auth_failure', reject);
+            });
+            return qr;
+        } catch (error) {
+            attempts++;
+            if (attempts >= maxRetries) throw error;
+            console.log(`Retrying QR generation, attempt ${attempts}`);
+        }
+    }
+}
+
 app.get('/get-qr/:userId', async (req, res) => {
     const userId = req.params.userId;
 
