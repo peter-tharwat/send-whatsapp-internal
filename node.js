@@ -34,30 +34,39 @@ const initializeClient = (userId, res) => {
         }
     });
 
-    clients[userId] = { client, isReady: false };
+    clients[userId] = { client, isReady: false, qrSent: false };
 
-    client.on('qr', (qr) => {
-        qrcode.toDataURL(qr, (err, url) => {
-            if (res) {
+    // Listen for the QR code event once to avoid multiple responses
+    client.once('qr', (qr) => {
+        if (!clients[userId].qrSent) {
+            qrcode.toDataURL(qr, (err, url) => {
+                if (err) {
+                    console.error("Error generating QR code:", err);
+                    return res.status(500).json({ status: 'error', message: 'QR generation failed' });
+                }
+                clients[userId].qrSent = true; // Mark the QR code as sent
                 res.json({ qr: url });
-            }
-        });
+            });
+        }
     });
 
     client.on('ready', () => {
         console.log(`Client for user ${userId} is ready!`);
         clients[userId].isReady = true;
+        clients[userId].qrSent = false; // Reset QR sent flag on successful login
     });
 
     client.on('auth_failure', () => {
         console.log(`Authentication failure for user ${userId}`);
         clients[userId].isReady = false;
+        clients[userId].qrSent = false;
         delete clients[userId]; // Clear invalid session
     });
 
     client.on('disconnected', (reason) => {
         console.log(`Client for user ${userId} disconnected: ${reason}`);
         clients[userId].isReady = false;
+        clients[userId].qrSent = false;
         delete clients[userId]; // Clear session on disconnect
     });
 
@@ -69,6 +78,9 @@ app.get('/get-qr/:userId', (req, res) => {
 
     if (clients[userId] && clients[userId].isReady) {
         res.json({ status: 'success', message: 'Session already active' });
+    } else if (clients[userId] && !clients[userId].isReady) {
+        // If client exists but is not ready, QR code may already be generated
+        res.json({ status: 'pending', message: 'QR code already generated. Please scan it.' });
     } else {
         initializeClient(userId, res);
     }
