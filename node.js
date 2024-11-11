@@ -25,14 +25,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(verifySecretHeader);
 
-app.get('/get-qr/:userId', (req, res) => {
-    const userId = req.params.userId;
-
-    if (clients[userId] && clients[userId].isReady) {
-        res.json({ status: 'success', message: 'Session already active' });
-        return;
-    }
-
+const initializeClient = (userId, res) => {
     const client = new Client({
         authStrategy: new LocalAuth({ clientId: userId }),
         puppeteer: {
@@ -45,7 +38,9 @@ app.get('/get-qr/:userId', (req, res) => {
 
     client.on('qr', (qr) => {
         qrcode.toDataURL(qr, (err, url) => {
-            res.json({ qr: url });
+            if (res) {
+                res.json({ qr: url });
+            }
         });
     });
 
@@ -57,18 +52,35 @@ app.get('/get-qr/:userId', (req, res) => {
     client.on('auth_failure', () => {
         console.log(`Authentication failure for user ${userId}`);
         clients[userId].isReady = false;
+        delete clients[userId]; // Clear invalid session
+    });
+
+    client.on('disconnected', (reason) => {
+        console.log(`Client for user ${userId} disconnected: ${reason}`);
+        clients[userId].isReady = false;
+        delete clients[userId]; // Clear session on disconnect
     });
 
     client.initialize();
+};
+
+app.get('/get-qr/:userId', (req, res) => {
+    const userId = req.params.userId;
+
+    if (clients[userId] && clients[userId].isReady) {
+        res.json({ status: 'success', message: 'Session already active' });
+    } else {
+        initializeClient(userId, res);
+    }
 });
 
 app.get('/check-active/:userId', (req, res) => {
     const userId = req.params.userId;
     if (clients[userId] && clients[userId].isReady) {
         res.json({ status: 'success', message: 'Session already active' });
-        return;
+    } else {
+        res.json({ status: 'error', message: 'Session NOT active' });
     }
-    res.json({ status: 'error', message: 'Session NOT active' });
 });
 
 app.post('/send-message/:userId', (req, res) => {
@@ -76,8 +88,7 @@ app.post('/send-message/:userId', (req, res) => {
     const { phoneNumber, message } = req.body;
 
     if (!clients[userId] || !clients[userId].isReady) {
-        res.status(400).json({ status: 'error', message: 'User session is not ready or is inactive' });
-        return;
+        return res.status(400).json({ status: 'error', message: 'User session is not ready or is inactive' });
     }
 
     const validPhoneNumberRegex = /^[1-9]\d{10,14}$/;
