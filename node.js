@@ -6,9 +6,9 @@ require('dotenv').config();
 
 const app = express();
 const port = 3000;
-const clients = {}; // Store client sessions by user ID
+const clients = {}; // Store client sessions and QR code cache by user ID
 
-const QR_EXPIRY_TIME = 20000; // 20 seconds
+const QR_CACHE_DURATION = 20000; // Cache duration of 20 seconds
 
 const verifySecretHeader = (req, res, next) => {
     const secretHeader = req.headers['secret'];
@@ -44,30 +44,30 @@ const initializeClient = (userId, res) => {
                 console.error("Error generating QR code:", err);
                 return res.status(500).json({ status: 'error', message: 'QR generation failed' });
             }
-            // Cache the QR code and the timestamp when it was generated
+            // Cache the QR code and timestamp
             clients[userId].qrCode = url;
             clients[userId].qrGeneratedAt = Date.now();
-            res.json({ qr: url });
+            res.json({ qr: url }); // Respond with the QR code
         });
     });
 
     client.on('ready', () => {
         console.log(`Client for user ${userId} is ready!`);
         clients[userId].isReady = true;
-        clients[userId].qrCode = null; // Clear stored QR code on successful login
+        clients[userId].qrCode = null; // Clear cached QR code once session is ready
         clients[userId].qrGeneratedAt = null;
     });
 
     client.on('auth_failure', () => {
         console.log(`Authentication failure for user ${userId}`);
         clients[userId].isReady = false;
-        delete clients[userId];
+        delete clients[userId]; // Clear invalid session
     });
 
     client.on('disconnected', (reason) => {
         console.log(`Client for user ${userId} disconnected: ${reason}`);
         clients[userId].isReady = false;
-        delete clients[userId];
+        delete clients[userId]; // Clear session on disconnect
     });
 
     client.initialize();
@@ -78,16 +78,15 @@ app.get('/get-qr/:userId', (req, res) => {
 
     if (clients[userId] && clients[userId].isReady) {
         return res.json({ status: 'success', message: 'Session already active' });
-    } 
-
-    // Check if QR code was generated within the expiry time
-    if (clients[userId] && clients[userId].qrCode && 
-        Date.now() - clients[userId].qrGeneratedAt < QR_EXPIRY_TIME) {
-        // Use cached QR code if still valid
-        return res.json({ qr: clients[userId].qrCode });
     }
 
-    // If no client or expired QR code, reinitialize client to generate a new QR code
+    // Check if a cached QR code exists and is within the 20-second cache duration
+    if (clients[userId] && clients[userId].qrCode && 
+        Date.now() - clients[userId].qrGeneratedAt < QR_CACHE_DURATION) {
+        return res.json({ qr: clients[userId].qrCode }); // Return cached QR code
+    }
+
+    // Initialize client if no cached QR code or cache is expired
     initializeClient(userId, res);
 });
 
