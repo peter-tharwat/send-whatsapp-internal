@@ -40,86 +40,90 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(verifySecretHeader);
 
-const initializeClient = async (userId, res) => {
-    // Ensure any previous session is fully cleaned up
-    if (clients[userId]) {
-        clients[userId].client.removeAllListeners();
-        delete clients[userId];
+const initializeClient = (userId, res) => {
+    try {
+        const client = new Client({
+            authStrategy: new LocalAuth({ clientId: userId }),
+            puppeteer: {
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            }
+        });
+
+        clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
+
+        // Flag to ensure we only respond once
+        let responseSent = false;
+
+        client.on('qr', (qr) => {
+            if (!responseSent) {
+                qrcode.toDataURL(qr, (err, url) => {
+                    if (err) {
+                        console.error("Error generating QR code:", err);
+                        if (!responseSent) {
+                            res.status(500).json({ status: 'error', message: 'QR generation failed' });
+                            responseSent = true;
+                        }
+                        return;
+                    }
+                    // Cache the QR code and timestamp
+                    clients[userId].qrCode = url;
+                    clients[userId].qrGeneratedAt = Date.now();
+                    if (!responseSent) {
+                        res.json({ qr: url });
+                        responseSent = true;
+                    }
+                });
+            }
+        });
+
+        client.on('ready', () => {
+            console.log(`Client for user ${userId} is ready!`);
+            clients[userId].isReady = true;
+            clients[userId].qrCode = null; // Clear cached QR code once session is ready
+            clients[userId].qrGeneratedAt = null;
+        });
+
+        client.on('auth_failure', () => {
+            console.log(`Authentication failure for user ${userId}`);
+            clients[userId].isReady = false;
+            delete clients[userId]; // Clear invalid session
+        });
+
+        client.on('disconnected', (reason) => {
+            console.log(`Client for user ${userId} disconnected: ${reason}`);
+            clients[userId].isReady = false;
+            client.removeAllListeners(); // Clear all event listeners to prevent additional responses
+            delete clients[userId];
+        });
+
+        client.initialize();
+    } catch (error) {
+        console.error('Error initializing client:', error);
+        res.status(500).json({ status: 'error', message: 'Failed to initialize client' });
     }
-
-    const client = new Client({
-        authStrategy: new LocalAuth({ clientId: userId }),
-        puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            timeout: 30000, // Puppeteer timeout in milliseconds (30 seconds)
-        }
-    });
-
-    clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
-
-    // Add QR code generation logic with retry
-    const generateQRCode = async () => {
-        try {
-            const qr = await new Promise((resolve, reject) => {
-                client.once('qr', resolve);
-                client.once('disconnected', () => reject(new Error("Disconnected during QR generation")));
-            });
-
-            const qrCodeUrl = await qrcode.toDataURL(qr);
-            clients[userId].qrCode = qrCodeUrl;
-            clients[userId].qrGeneratedAt = Date.now();
-            res.json({ qr: qrCodeUrl });
-        } catch (error) {
-            console.error("Error generating QR code:", error);
-            res.status(500).json({ status: 'error', message: 'QR generation failed, retrying...' });
-            // Retry or handle failure
-            client.initialize();
-        }
-    };
-
-    client.on('ready', () => {
-        console.log(`Client for user ${userId} is ready!`);
-        clients[userId].isReady = true;
-        clients[userId].qrCode = null; // Clear cached QR code once session is ready
-        clients[userId].qrGeneratedAt = null;
-    });
-
-    client.on('auth_failure', () => {
-        console.log(`Authentication failure for user ${userId}`);
-        clients[userId].isReady = false;
-        delete clients[userId]; // Clear invalid session
-    });
-
-    client.on('disconnected', (reason) => {
-        console.log(`Client for user ${userId} disconnected: ${reason}`);
-        clients[userId].isReady = false;
-        client.removeAllListeners(); // Clear all event listeners to prevent additional responses
-        delete clients[userId];
-    });
-
-    client.initialize();
-    await generateQRCode();
 };
 
-app.get('/get-qr/:userId', (req, res) => {
-    const userId = req.params.userId;
+app.get('/get-qr/:userId', (req, res, next) => {
+    try {
+        const userId = req.params.userId;
 
-    if (clients[userId] && clients[userId].isReady) {
-        return res.json({ status: 'success', message: 'Session already active' });
+        if (clients[userId] && clients[userId].isReady) {
+            return res.json({ status: 'success', message: 'Session already active' });
+        }
+
+        // Check if a cached QR code exists and is within the 20-second cache duration
+        if (clients[userId] && clients[userId].qrCode && 
+            Date.now() - clients[userId].qrGeneratedAt < QR_CACHE_DURATION) {
+            return res.json({ qr: clients[userId].qrCode }); // Return cached QR code
+        }
+
+        // Initialize client if no cached QR code or cache is expired
+        initializeClient(userId, res);
+    } catch (error) {
+        console.error('Error in /get-qr route:', error);
+        next(error); // Pass to centralized error handler
     }
-
-    // Check if a cached QR code exists and is within the 20-second cache duration
-    if (clients[userId] && clients[userId].qrCode && 
-        Date.now() - clients[userId].qrGeneratedAt < QR_CACHE_DURATION) {
-        return res.json({ qr: clients[userId].qrCode }); // Return cached QR code
-    }
-
-    // Initialize client if no cached QR code or cache is expired
-    initializeClient(userId, res).catch(error => {
-        console.error("Failed to initialize client:", error);
-        res.status(500).json({ status: 'error', message: 'Failed to initialize client' });
-    });
 });
 
 app.get('/check-active/:userId', (req, res, next) => {
