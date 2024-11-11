@@ -8,6 +8,8 @@ const app = express();
 const port = 3000;
 const clients = {}; // Store client sessions by user ID
 
+const QR_EXPIRY_TIME = 20000; // 20 seconds
+
 const verifySecretHeader = (req, res, next) => {
     const secretHeader = req.headers['secret'];
     const expectedSecret = process.env.WHATSAPP_INTERNAL_SECRET_KEY;
@@ -34,40 +36,38 @@ const initializeClient = (userId, res) => {
         }
     });
 
-    clients[userId] = { client, isReady: false, qrSent: false };
+    clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
 
-    // Listen for the QR code event once to avoid multiple responses
-    client.once('qr', (qr) => {
-        if (!clients[userId].qrSent) {
-            qrcode.toDataURL(qr, (err, url) => {
-                if (err) {
-                    console.error("Error generating QR code:", err);
-                    return res.status(500).json({ status: 'error', message: 'QR generation failed' });
-                }
-                clients[userId].qrSent = true; // Mark the QR code as sent
-                res.json({ qr: url });
-            });
-        }
+    client.on('qr', (qr) => {
+        qrcode.toDataURL(qr, (err, url) => {
+            if (err) {
+                console.error("Error generating QR code:", err);
+                return res.status(500).json({ status: 'error', message: 'QR generation failed' });
+            }
+            // Cache the QR code and the timestamp when it was generated
+            clients[userId].qrCode = url;
+            clients[userId].qrGeneratedAt = Date.now();
+            res.json({ qr: url });
+        });
     });
 
     client.on('ready', () => {
         console.log(`Client for user ${userId} is ready!`);
         clients[userId].isReady = true;
-        clients[userId].qrSent = false; // Reset QR sent flag on successful login
+        clients[userId].qrCode = null; // Clear stored QR code on successful login
+        clients[userId].qrGeneratedAt = null;
     });
 
     client.on('auth_failure', () => {
         console.log(`Authentication failure for user ${userId}`);
         clients[userId].isReady = false;
-        clients[userId].qrSent = false;
-        delete clients[userId]; // Clear invalid session
+        delete clients[userId];
     });
 
     client.on('disconnected', (reason) => {
         console.log(`Client for user ${userId} disconnected: ${reason}`);
         clients[userId].isReady = false;
-        clients[userId].qrSent = false;
-        delete clients[userId]; // Clear session on disconnect
+        delete clients[userId];
     });
 
     client.initialize();
@@ -77,10 +77,18 @@ app.get('/get-qr/:userId', (req, res) => {
     const userId = req.params.userId;
 
     if (clients[userId] && clients[userId].isReady) {
-        res.json({ status: 'success', message: 'Session already active' });
-    } else {
-        initializeClient(userId, res);
+        return res.json({ status: 'success', message: 'Session already active' });
+    } 
+
+    // Check if QR code was generated within the expiry time
+    if (clients[userId] && clients[userId].qrCode && 
+        Date.now() - clients[userId].qrGeneratedAt < QR_EXPIRY_TIME) {
+        // Use cached QR code if still valid
+        return res.json({ qr: clients[userId].qrCode });
     }
+
+    // If no client or expired QR code, reinitialize client to generate a new QR code
+    initializeClient(userId, res);
 });
 
 app.get('/check-active/:userId', (req, res) => {
