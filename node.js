@@ -78,9 +78,6 @@ app.get('/get-qr/:userId', (req, res) => {
 
     if (clients[userId] && clients[userId].isReady) {
         res.json({ status: 'success', message: 'Session already active' });
-    } else if (clients[userId] && !clients[userId].isReady) {
-        // If client exists but is not ready, QR code may already be generated
-        res.json({ status: 'pending', message: 'QR code already generated. Please scan it.' });
     } else {
         initializeClient(userId, res);
     }
