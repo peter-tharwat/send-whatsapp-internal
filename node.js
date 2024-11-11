@@ -38,17 +38,29 @@ const initializeClient = (userId, res) => {
 
     clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
 
+    // Flag to ensure we only respond once
+    let responseSent = false;
+
     client.on('qr', (qr) => {
-        qrcode.toDataURL(qr, (err, url) => {
-            if (err) {
-                console.error("Error generating QR code:", err);
-                return res.status(500).json({ status: 'error', message: 'QR generation failed' });
-            }
-            // Cache the QR code and timestamp
-            clients[userId].qrCode = url;
-            clients[userId].qrGeneratedAt = Date.now();
-            res.json({ qr: url }); // Respond with the QR code
-        });
+        if (!responseSent) {
+            qrcode.toDataURL(qr, (err, url) => {
+                if (err) {
+                    console.error("Error generating QR code:", err);
+                    if (!responseSent) {
+                        res.status(500).json({ status: 'error', message: 'QR generation failed' });
+                        responseSent = true;
+                    }
+                    return;
+                }
+                // Cache the QR code and timestamp
+                clients[userId].qrCode = url;
+                clients[userId].qrGeneratedAt = Date.now();
+                if (!responseSent) {
+                    res.json({ qr: url });
+                    responseSent = true;
+                }
+            });
+        }
     });
 
     client.on('ready', () => {
@@ -67,7 +79,8 @@ const initializeClient = (userId, res) => {
     client.on('disconnected', (reason) => {
         console.log(`Client for user ${userId} disconnected: ${reason}`);
         clients[userId].isReady = false;
-        delete clients[userId]; // Clear session on disconnect
+        client.removeAllListeners(); // Clear all event listeners to prevent additional responses
+        delete clients[userId];
     });
 
     client.initialize();
