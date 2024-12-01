@@ -218,6 +218,46 @@ app.post('/send-bulk-messages/:userId', async (req, res, next) => {
     }
 });
 
+
+app.post('/logout/:userId', async (req, res, next) => {
+    try {
+        const userId = req.params.userId;
+
+        if (!clients[userId]) {
+            return res.status(404).json({
+                status: 'error',
+                message: `No active session found for user ${userId}`
+            });
+        }
+
+        const client = clients[userId].client;
+
+        try {
+            // Properly destroy the client session
+            await client.destroy();
+            console.log(`Client for user ${userId} has been logged out and destroyed.`);
+        } catch (destroyError) {
+            console.error(`Error destroying client for user ${userId}:`, destroyError);
+            return res.status(500).json({
+                status: 'error',
+                message: `Failed to log out user ${userId}`
+            });
+        }
+
+        // Remove client session from memory
+        delete clients[userId];
+
+        res.json({
+            status: 'success',
+            message: `User ${userId} successfully logged out`
+        });
+    } catch (error) {
+        console.error('Error in /logout route:', error);
+        next(error);
+    }
+});
+
+
 // Centralized error-handling middleware
 app.use((err, req, res, next) => {
     console.error('Unhandled error:', err);
