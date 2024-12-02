@@ -236,6 +236,14 @@ app.post('/logout/:userId', async (req, res, next) => {
             // Properly destroy the client session
             await client.destroy();
             console.log(`Client for user ${userId} has been logged out and destroyed.`);
+
+            // Delete the LocalAuth session data
+            const sessionPath = `./.wwebjs_auth/session-${userId}`;
+            const fs = require('fs');
+            if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+                console.log(`Session data for user ${userId} has been deleted.`);
+            }
         } catch (destroyError) {
             console.error(`Error destroying client for user ${userId}:`, destroyError);
             return res.status(500).json({
