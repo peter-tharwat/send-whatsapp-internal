@@ -2,7 +2,10 @@ const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const bodyParser = require('body-parser');
-const AWS = require('aws-sdk');
+const fs = require('fs');
+const path = require('path');
+const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
@@ -12,13 +15,14 @@ const clients = {}; // Store client sessions and QR code cache by user ID
 const QR_CACHE_DURATION = 20000; // Cache duration of 20 seconds
 const QR_GENERATION_TIMEOUT = 15000; // 15-second timeout for generating a new QR code
 
-// Configure AWS S3
-const s3 = new AWS.S3({
-    endpoint: new AWS.Endpoint(process.env.AWS_ENDPOINT), // AWS S3 or compatible endpoint
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID, // Access key
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY, // Secret key
-    region: process.env.AWS_REGION || 'us-east-1', // Optional: For compatibility
-    s3ForcePathStyle: true, // Ensure path-style compatibility for DigitalOcean Spaces
+// Configure AWS S3 Client
+const s3 = new S3Client({
+    endpoint: process.env.AWS_ENDPOINT, // AWS S3 or compatible endpoint
+    region: process.env.AWS_REGION || 'us-east-1',
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    },
 });
 
 // Middleware
@@ -27,27 +31,26 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // Helper Functions for S3 Operations
 const uploadToS3 = async (key, content) => {
-    await s3
-        .putObject({
-            Bucket: process.env.AWS_BUCKET_NAME,
-            Key: key,
-            Body: content,
-        })
-        .promise();
+    const command = new PutObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key: key,
+        Body: content,
+    });
+    await s3.send(command);
     console.log(`Uploaded ${key} to S3.`);
 };
 
 const downloadFromS3 = async (key) => {
+    const command = new GetObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key: key,
+    });
+
     try {
-        const data = await s3
-            .getObject({
-                Bucket: process.env.AWS_BUCKET_NAME,
-                Key: key,
-            })
-            .promise();
-        return data.Body;
+        const { Body } = await s3.send(command);
+        return Readable.toWeb(Body).getReader();
     } catch (err) {
-        if (err.code === 'NoSuchKey') {
+        if (err.name === 'NoSuchKey') {
             console.log(`Key ${key} does not exist in S3.`);
             return null;
         }
@@ -56,25 +59,21 @@ const downloadFromS3 = async (key) => {
 };
 
 const deleteFromS3 = async (prefix) => {
-    try {
-        const listParams = {
-            Bucket: process.env.AWS_BUCKET_NAME,
-            Prefix: prefix,
-        };
-        const listedObjects = await s3.listObjectsV2(listParams).promise();
-        if (listedObjects.Contents.length === 0) return;
+    const listCommand = new ListObjectsV2Command({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Prefix: prefix,
+    });
 
-        const deleteParams = {
-            Bucket: process.env.AWS_BUCKET_NAME,
-            Delete: { Objects: listedObjects.Contents.map(({ Key }) => ({ Key })) },
-        };
+    const listedObjects = await s3.send(listCommand);
+    if (!listedObjects.Contents || listedObjects.Contents.length === 0) return;
 
-        await s3.deleteObjects(deleteParams).promise();
-        console.log(`Deleted all objects with prefix ${prefix} from S3.`);
-    } catch (err) {
-        console.error(`Error deleting objects with prefix ${prefix}:`, err);
-        throw err;
-    }
+    const deleteCommand = new DeleteObjectsCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Delete: { Objects: listedObjects.Contents.map(({ Key }) => ({ Key })) },
+    });
+
+    await s3.send(deleteCommand);
+    console.log(`Deleted all objects with prefix ${prefix} from S3.`);
 };
 
 // Initialize WhatsApp Client
@@ -85,8 +84,8 @@ const initializeClient = async (userId, res) => {
     const authData = await downloadFromS3(`${sessionPrefix}auth`);
     if (authData) {
         const authPath = `/tmp/session-${userId}`;
-        require('fs').mkdirSync(authPath, { recursive: true });
-        require('fs').writeFileSync(`${authPath}/auth`, authData);
+        fs.mkdirSync(authPath, { recursive: true });
+        fs.writeFileSync(`${authPath}/auth`, authData);
         console.log(`Session for user ${userId} downloaded to temporary path.`);
     }
 
@@ -127,8 +126,8 @@ const initializeClient = async (userId, res) => {
 
         // Upload session data to S3
         const authPath = `/tmp/session-${userId}/auth`;
-        if (require('fs').existsSync(authPath)) {
-            const sessionData = require('fs').readFileSync(authPath);
+        if (fs.existsSync(authPath)) {
+            const sessionData = fs.readFileSync(authPath);
             await uploadToS3(`${sessionPrefix}auth`, sessionData);
             console.log(`Session data for user ${userId} uploaded to S3.`);
         }
