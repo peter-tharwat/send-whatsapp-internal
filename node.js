@@ -29,6 +29,28 @@ const s3 = new S3Client({
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+const testS3Upload = async () => {
+    const bucketName = process.env.AWS_BUCKET_NAME;
+    const testKey = 'test-upload-file.txt';
+    const testContent = 'This is a test upload.';
+
+    try {
+        // Upload a test file
+        const command = new PutObjectCommand({
+            Bucket: bucketName,
+            Key: testKey,
+            Body: testContent,
+        });
+        await s3.send(command);
+        console.log(`Successfully uploaded ${testKey} to bucket ${bucketName}`);
+    } catch (err) {
+        console.error('Error uploading file to S3:', err);
+    }
+};
+
+testS3Upload();
+
+
 // Helper Functions for S3 Operations
 const uploadToS3 = async (key, content) => {
     const command = new PutObjectCommand({
