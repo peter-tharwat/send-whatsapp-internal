@@ -5,7 +5,6 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
-const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
@@ -48,7 +47,11 @@ const downloadFromS3 = async (key) => {
 
     try {
         const { Body } = await s3.send(command);
-        return await streamToString(Body);
+        const chunks = [];
+        for await (const chunk of Body) {
+            chunks.push(chunk);
+        }
+        return Buffer.concat(chunks);
     } catch (err) {
         if (err.name === 'NoSuchKey') {
             console.log(`Key ${key} does not exist in S3. This is normal for new sessions.`);
@@ -56,15 +59,6 @@ const downloadFromS3 = async (key) => {
         }
         throw err; // Re-throw other errors
     }
-};
-
-// Helper to convert a stream to string
-const streamToString = async (stream) => {
-    const chunks = [];
-    for await (const chunk of stream) {
-        chunks.push(chunk);
-    }
-    return Buffer.concat(chunks).toString();
 };
 
 const deleteFromS3 = async (prefix) => {
@@ -87,21 +81,22 @@ const deleteFromS3 = async (prefix) => {
 
 // Initialize WhatsApp Client
 const initializeClient = async (userId, res) => {
+    const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
+    const authPath = path.join(sessionDir, 'auth');
     const sessionPrefix = `wwebjs_auth/session-${userId}/`;
 
     // Download session data from S3
     const authData = await downloadFromS3(`${sessionPrefix}auth`);
     if (authData) {
-        const authPath = `/tmp/session-${userId}`;
-        fs.mkdirSync(authPath, { recursive: true });
-        fs.writeFileSync(`${authPath}/auth`, authData);
-        console.log(`Session for user ${userId} downloaded to temporary path.`);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        fs.writeFileSync(authPath, authData);
+        console.log(`Session for user ${userId} downloaded to ${authPath}`);
     } else {
         console.log(`No session found for user ${userId}. A new session will be created.`);
     }
 
     const client = new Client({
-        authStrategy: new LocalAuth({ clientId: userId, dataPath: '/tmp' }),
+        authStrategy: new LocalAuth({ clientId: userId, dataPath: path.resolve('.wwebjs_auth') }),
         puppeteer: {
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -110,59 +105,33 @@ const initializeClient = async (userId, res) => {
 
     clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
 
-    const generateQRCode = () => {
-        return new Promise((resolve, reject) => {
-            const qrTimeout = setTimeout(() => {
-                reject(new Error('QR code generation timed out.'));
-            }, QR_GENERATION_TIMEOUT);
-
-            client.once('qr', async (qr) => {
-                clearTimeout(qrTimeout);
-                try {
-                    const qrCodeUrl = await qrcode.toDataURL(qr);
-                    clients[userId].qrCode = qrCodeUrl;
-                    clients[userId].qrGeneratedAt = Date.now();
-                    res.json({ qr: qrCodeUrl });
-                    resolve();
-                } catch (error) {
-                    reject(error);
-                }
-            });
-        });
-    };
+    client.on('qr', async (qr) => {
+        console.log(`QR Code received for user ${userId}`);
+        const qrCodeUrl = await qrcode.toDataURL(qr);
+        clients[userId].qrCode = qrCodeUrl;
+        clients[userId].qrGeneratedAt = Date.now();
+        if (res) res.json({ qr: qrCodeUrl });
+    });
 
     client.on('ready', async () => {
         console.log(`Client for user ${userId} is ready.`);
         clients[userId].isReady = true;
 
         // Upload the newly created session to S3
-        setTimeout(async () => {
-            const authPath = `/tmp/session-${userId}/auth`;
-            console.log(`Checking for authPath: ${authPath}`);
-            if (fs.existsSync(authPath)) {
-                console.log(`authPath exists for user ${userId}`);
-                const sessionData = fs.readFileSync(authPath);
-                await uploadToS3(`${sessionPrefix}auth`, sessionData);
-                console.log(`Session data for user ${userId} uploaded to S3.`);
-            } else {
-                console.log(`authPath does not exist for user ${userId}`);
-            }
-        }, 500); // Adjust delay as needed
+        if (fs.existsSync(authPath)) {
+            const sessionData = fs.readFileSync(authPath);
+            await uploadToS3(`${sessionPrefix}auth`, sessionData);
+            console.log(`Session data for user ${userId} uploaded to S3.`);
+        } else {
+            console.warn(`authPath does not exist for user ${userId} after ready event.`);
+        }
     });
 
     client.initialize();
-
-    try {
-        await generateQRCode();
-    } catch (error) {
-        console.error('QR generation failed:', error);
-        res.status(500).json({ status: 'error', message: 'Failed to generate QR code' });
-    }
 };
 
 // Routes
 
-// Get QR Code for User
 app.get('/get-qr/:userId', (req, res) => {
     const userId = req.params.userId;
 
@@ -176,7 +145,6 @@ app.get('/get-qr/:userId', (req, res) => {
     });
 });
 
-// Check if User is Active
 app.get('/check-active/:userId', (req, res) => {
     const userId = req.params.userId;
     if (clients[userId] && clients[userId].isReady) {
@@ -186,7 +154,6 @@ app.get('/check-active/:userId', (req, res) => {
     }
 });
 
-// Send Message to a Single User
 app.post('/send-message/:userId', async (req, res) => {
     const userId = req.params.userId;
     const { phoneNumber, message } = req.body;
@@ -206,7 +173,6 @@ app.post('/send-message/:userId', async (req, res) => {
     }
 });
 
-// Send Bulk Messages
 app.post('/send-bulk-messages/:userId', async (req, res) => {
     const userId = req.params.userId;
     const messageList = req.body;
@@ -231,7 +197,6 @@ app.post('/send-bulk-messages/:userId', async (req, res) => {
     res.json(results);
 });
 
-// Logout User and Delete Session
 app.post('/logout/:userId', async (req, res) => {
     const userId = req.params.userId;
     const sessionPrefix = `wwebjs_auth/session-${userId}/`;
@@ -256,7 +221,6 @@ app.post('/logout/:userId', async (req, res) => {
     }
 });
 
-// Start Server
 app.listen(port, () => {
     console.log(`WhatsApp server listening on port ${port}`);
 });
