@@ -37,6 +37,22 @@ const verifySecretHeader = (req, res, next) => {
     }
     next();
 };
+const deleteFolderRecursive = (folderPath) => {
+    if (fs.existsSync(folderPath)) {
+        fs.readdirSync(folderPath).forEach((file) => {
+            const currentPath = path.join(folderPath, file);
+            if (fs.lstatSync(currentPath).isDirectory()) {
+                // Recursively delete subdirectory
+                deleteFolderRecursive(currentPath);
+            } else {
+                // Forcefully delete file
+                fs.unlinkSync(currentPath);
+            }
+        });
+        fs.rmdirSync(folderPath); // Remove the now-empty directory
+    }
+};
+
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -108,8 +124,11 @@ const initializeClient = async (userId, res) => {
         clients[userId].isReady = false;
         try {
             await client.destroy();
+            console.log(`Session for user ${userId} destroyed due to disconnection.`);
+            const sessionPath = `./.wwebjs_auth/session-${userId}`;
+            deleteFolderRecursive(sessionPath);
         } catch (error) {
-            console.error('Error during client destruction after disconnect:', error);
+            console.error('Error during session cleanup after disconnection:', error);
         }
         delete clients[userId];
     });
@@ -177,6 +196,7 @@ app.post('/send-message/:userId', async (req, res, next) => {
         }
 
         const client = clients[userId].client;
+        console.log(`sending message to ${fullPhoneNumber}, message is ${message}`);
         const response = await client.sendMessage(fullPhoneNumber, message);
         res.json({ status: 'success', response });
     } catch (error) {
@@ -199,6 +219,7 @@ app.post('/send-bulk-messages/:userId', async (req, res, next) => {
 
         for (const [phoneNumber, message] of Object.entries(messageList)) {
             try {
+                console.log(`sending message to ${phoneNumber}, message is ${message}`);
                 const response = await client.sendMessage(`${phoneNumber}@c.us`, message);
                 results[phoneNumber] = { status: 'success', response };
             } catch (error) {
@@ -239,11 +260,8 @@ app.post('/logout/:userId', async (req, res, next) => {
 
             // Delete the LocalAuth session data
             const sessionPath = `./.wwebjs_auth/session-${userId}`;
-            const fs = require('fs');
-            if (fs.existsSync(sessionPath)) {
-                fs.rmSync(sessionPath, { recursive: true, force: true });
-                console.log(`Session data for user ${userId} has been deleted.`);
-            }
+            deleteFolderRecursive(sessionPath);
+            console.log(`Session data for user ${userId} has been deleted.`);
         } catch (destroyError) {
             console.error(`Error destroying client for user ${userId}:`, destroyError);
             return res.status(500).json({
