@@ -39,6 +39,12 @@ const downloadFileFromS3 = async (key, localPath) => {
 
     try {
         const { Body } = await s3.send(command);
+
+        if (fs.existsSync(localPath) && fs.lstatSync(localPath).isDirectory()) {
+            console.warn(`Cannot write to ${localPath} because it is a directory.`);
+            return;
+        }
+
         const fileStream = fs.createWriteStream(localPath);
         return new Promise((resolve, reject) => {
             Body.pipe(fileStream)
@@ -70,6 +76,11 @@ const restoreDirectoryFromS3 = async (prefix, localDir) => {
     for (const { Key } of listedObjects.Contents) {
         const relativePath = Key.replace(prefix, ''); // Remove prefix to get relative file path
         const localPath = path.join(localDir, relativePath);
+
+        if (!relativePath) {
+            console.warn(`Skipping S3 key ${Key} as it resolves to a directory.`);
+            continue;
+        }
 
         // Create necessary subdirectories
         fs.mkdirSync(path.dirname(localPath), { recursive: true });
