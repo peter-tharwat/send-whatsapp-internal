@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
 require('dotenv').config();
+const chokidar = require('chokidar');
 
 const app = express();
 const port = 3000;
