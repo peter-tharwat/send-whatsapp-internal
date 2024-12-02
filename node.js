@@ -83,7 +83,7 @@ const deleteFromS3 = async (prefix) => {
 const initializeClient = async (userId, res) => {
     const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
     const authPath = path.join(sessionDir, 'auth');
-    const sessionPrefix = `wwebjs_auth/session-${userId}/`;
+    const sessionPrefix = `./wwebjs_auth/session-${userId}/`;
 
     // Download session data from S3
     const authData = await downloadFromS3(`${sessionPrefix}auth`);
@@ -117,15 +117,31 @@ const initializeClient = async (userId, res) => {
         console.log(`Client for user ${userId} is ready.`);
         clients[userId].isReady = true;
 
-        // Upload the newly created session to S3
-        if (fs.existsSync(authPath)) {
-            const sessionData = fs.readFileSync(authPath);
+        const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
+        const authPath = path.join(sessionDir, 'auth');
+
+        console.log(`Checking session directory: ${sessionDir}`);
+        if (fs.existsSync(sessionDir)) {
+            console.log(`Session directory contents for user ${userId}:`, fs.readdirSync(sessionDir));
+        } else {
+            console.log(`Session directory for user ${userId} does not exist.`);
+        }
+
+        const watcher = chokidar.watch(authPath, { persistent: true });
+
+        watcher.on('add', async (path) => {
+            console.log(`Detected new session file for user ${userId}: ${path}`);
+            const sessionData = fs.readFileSync(path);
             await uploadToS3(`${sessionPrefix}auth`, sessionData);
             console.log(`Session data for user ${userId} uploaded to S3.`);
-        } else {
-            console.warn(`authPath does not exist for user ${userId} after ready event.`);
-        }
+            watcher.close(); // Stop watching after the file is found and uploaded
+        });
+
+        watcher.on('error', (error) => {
+            console.error(`Error watching authPath for user ${userId}:`, error);
+        });
     });
+
 
     client.initialize();
 };
