@@ -48,14 +48,23 @@ const downloadFromS3 = async (key) => {
 
     try {
         const { Body } = await s3.send(command);
-        return Readable.toWeb(Body).getReader();
+        return await streamToString(Body);
     } catch (err) {
         if (err.name === 'NoSuchKey') {
-            console.log(`Key ${key} does not exist in S3.`);
-            return null;
+            console.log(`Key ${key} does not exist in S3. This is normal for new sessions.`);
+            return null; // Return null for non-existing keys
         }
-        throw err;
+        throw err; // Re-throw other errors
     }
+};
+
+// Helper to convert a stream to string
+const streamToString = async (stream) => {
+    const chunks = [];
+    for await (const chunk of stream) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString();
 };
 
 const deleteFromS3 = async (prefix) => {
@@ -87,6 +96,8 @@ const initializeClient = async (userId, res) => {
         fs.mkdirSync(authPath, { recursive: true });
         fs.writeFileSync(`${authPath}/auth`, authData);
         console.log(`Session for user ${userId} downloaded to temporary path.`);
+    } else {
+        console.log(`No session found for user ${userId}. A new session will be created.`);
     }
 
     const client = new Client({
@@ -124,7 +135,7 @@ const initializeClient = async (userId, res) => {
         console.log(`Client for user ${userId} is ready.`);
         clients[userId].isReady = true;
 
-        // Upload session data to S3
+        // Upload the newly created session to S3
         const authPath = `/tmp/session-${userId}/auth`;
         if (fs.existsSync(authPath)) {
             const sessionData = fs.readFileSync(authPath);
