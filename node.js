@@ -82,15 +82,15 @@ const deleteFromS3 = async (prefix) => {
 // Initialize WhatsApp Client
 const initializeClient = async (userId, res) => {
     const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
-    const authPath = path.join(sessionDir, 'auth');
+    
     const sessionPrefix = `./wwebjs_auth/session-${userId}/`;
 
     // Download session data from S3
-    const authData = await downloadFromS3(`${sessionPrefix}auth`);
+    const authData = await downloadFromS3(`${sessionPrefix}`);
     if (authData) {
         fs.mkdirSync(sessionDir, { recursive: true });
-        fs.writeFileSync(authPath, authData);
-        console.log(`Session for user ${userId} downloaded to ${authPath}`);
+        fs.writeFileSync(sessionDir, authData);
+        console.log(`Session for user ${userId} downloaded to ${sessionDir}`);
     } else {
         console.log(`No session found for user ${userId}. A new session will be created.`);
     }
@@ -118,7 +118,7 @@ const initializeClient = async (userId, res) => {
         clients[userId].isReady = true;
 
         const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
-        const authPath = path.join(sessionDir, 'auth');
+        
 
         console.log(`Checking session directory: ${sessionDir}`);
         if (fs.existsSync(sessionDir)) {
@@ -127,18 +127,18 @@ const initializeClient = async (userId, res) => {
             console.log(`Session directory for user ${userId} does not exist.`);
         }
 
-        const watcher = chokidar.watch(authPath, { persistent: true });
+        const watcher = chokidar.watch(sessionDir, { persistent: true });
 
         watcher.on('add', async (path) => {
             console.log(`Detected new session file for user ${userId}: ${path}`);
             const sessionData = fs.readFileSync(path);
-            await uploadToS3(`${sessionPrefix}auth`, sessionData);
+            await uploadToS3(`${sessionPrefix}`, sessionData);
             console.log(`Session data for user ${userId} uploaded to S3.`);
             watcher.close(); // Stop watching after the file is found and uploaded
         });
 
         watcher.on('error', (error) => {
-            console.error(`Error watching authPath for user ${userId}:`, error);
+            console.error(`Error watching sessionDir for user ${userId}:`, error);
         });
     });
 
