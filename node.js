@@ -29,28 +29,6 @@ const s3 = new S3Client({
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const testS3Upload = async () => {
-    const bucketName = process.env.AWS_BUCKET_NAME;
-    const testKey = 'test-upload-file.txt';
-    const testContent = 'This is a test upload.';
-
-    try {
-        // Upload a test file
-        const command = new PutObjectCommand({
-            Bucket: bucketName,
-            Key: testKey,
-            Body: testContent,
-        });
-        await s3.send(command);
-        console.log(`Successfully uploaded ${testKey} to bucket ${bucketName}`);
-    } catch (err) {
-        console.error('Error uploading file to S3:', err);
-    }
-};
-
-testS3Upload();
-
-
 // Helper Functions for S3 Operations
 const uploadToS3 = async (key, content) => {
     const command = new PutObjectCommand({
@@ -158,12 +136,18 @@ const initializeClient = async (userId, res) => {
         clients[userId].isReady = true;
 
         // Upload the newly created session to S3
-        const authPath = `/tmp/session-${userId}/auth`;
-        if (fs.existsSync(authPath)) {
-            const sessionData = fs.readFileSync(authPath);
-            await uploadToS3(`${sessionPrefix}auth`, sessionData);
-            console.log(`Session data for user ${userId} uploaded to S3.`);
-        }
+        setTimeout(async () => {
+            const authPath = `/tmp/session-${userId}/auth`;
+            console.log(`Checking for authPath: ${authPath}`);
+            if (fs.existsSync(authPath)) {
+                console.log(`authPath exists for user ${userId}`);
+                const sessionData = fs.readFileSync(authPath);
+                await uploadToS3(`${sessionPrefix}auth`, sessionData);
+                console.log(`Session data for user ${userId} uploaded to S3.`);
+            } else {
+                console.log(`authPath does not exist for user ${userId}`);
+            }
+        }, 500); // Adjust delay as needed
     });
 
     client.initialize();
