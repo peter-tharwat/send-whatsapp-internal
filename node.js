@@ -29,6 +29,62 @@ const s3 = new S3Client({
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+
+// Download an individual file
+const downloadFileFromS3 = async (key, localPath) => {
+    const command = new GetObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key: key,
+    });
+
+    try {
+        const { Body } = await s3.send(command);
+        const fileStream = fs.createWriteStream(localPath);
+        return new Promise((resolve, reject) => {
+            Body.pipe(fileStream)
+                .on('finish', resolve)
+                .on('error', reject);
+        });
+    } catch (err) {
+        console.error(`Error downloading file ${key} from S3:`, err);
+        throw err;
+    }
+};
+
+const restoreDirectoryFromS3 = async (prefix, localDir) => {
+    const listCommand = new ListObjectsV2Command({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Prefix: prefix,
+    });
+
+    const listedObjects = await s3.send(listCommand);
+
+    if (!listedObjects.Contents || listedObjects.Contents.length === 0) {
+        console.warn(`No files found under S3 prefix ${prefix}`);
+        return;
+    }
+
+    // Ensure the local directory exists
+    fs.mkdirSync(localDir, { recursive: true });
+
+    for (const { Key } of listedObjects.Contents) {
+        const relativePath = Key.replace(prefix, ''); // Remove prefix to get relative file path
+        const localPath = path.join(localDir, relativePath);
+
+        // Create necessary subdirectories
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+
+        // Download and save the file
+        console.log(`Downloading ${Key} to ${localPath}`);
+        await downloadFileFromS3(Key, localPath);
+    }
+
+    console.log(`Restored session directory ${localDir} from S3.`);
+};
+
+
+
+
 // Helper Functions for S3 Operations
 const uploadToS3 = async (key, content) => {
     const command = new PutObjectCommand({
@@ -87,14 +143,8 @@ const initializeClient = async (userId, res) => {
     const sessionPrefix = `./wwebjs_auth/session-${userId}/`;
 
     // Download session data from S3
-    const authData = await downloadFromS3(`${sessionPrefix}`);
-    if (authData) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-        fs.writeFileSync(sessionDir, authData);
-        console.log(`Session for user ${userId} downloaded to ${sessionDir}`);
-    } else {
-        console.log(`No session found for user ${userId}. A new session will be created.`);
-    }
+    console.log(`Restoring session for user ${userId} from S3.`);
+    await restoreDirectoryFromS3(sessionPrefix, sessionDir);
 
     const client = new Client({
         authStrategy: new LocalAuth({ clientId: userId, dataPath: path.resolve('.wwebjs_auth') }),
