@@ -54,6 +54,7 @@ const uploadDirectoryToS3 = async (localDir, s3Prefix) => {
     }
 };
 
+
 const restoreDirectoryFromS3 = async (prefix, localDir) => {
     const listCommand = new ListObjectsV2Command({
         Bucket: process.env.AWS_BUCKET_NAME,
