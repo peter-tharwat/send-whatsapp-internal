@@ -30,6 +30,66 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 
+const uploadDirectoryToS3 = async (localDir, s3Prefix) => {
+    const items = fs.readdirSync(localDir, { withFileTypes: true });
+
+    for (const item of items) {
+        const localPath = path.join(localDir, item.name);
+        const s3Key = `${s3Prefix}${item.name}`;
+
+        if (item.isDirectory()) {
+            // Recursively handle subdirectories
+            await uploadDirectoryToS3(localPath, `${s3Key}/`);
+        } else {
+            // Upload file
+            const fileContent = fs.readFileSync(localPath);
+            const command = new PutObjectCommand({
+                Bucket: process.env.AWS_BUCKET_NAME,
+                Key: s3Key,
+                Body: fileContent,
+            });
+            await s3.send(command);
+            console.log(`Uploaded ${s3Key} to S3.`);
+        }
+    }
+};
+
+const restoreDirectoryFromS3 = async (prefix, localDir) => {
+    const listCommand = new ListObjectsV2Command({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Prefix: prefix,
+    });
+
+    const listedObjects = await s3.send(listCommand);
+
+    if (!listedObjects.Contents || listedObjects.Contents.length === 0) {
+        console.warn(`No files found under S3 prefix ${prefix}`);
+        return;
+    }
+
+    // Ensure the local directory exists
+    fs.mkdirSync(localDir, { recursive: true });
+
+    for (const { Key } of listedObjects.Contents) {
+        const relativePath = Key.replace(prefix, ''); // Remove prefix to get relative file path
+        const localPath = path.join(localDir, relativePath);
+
+        if (!relativePath) {
+            console.warn(`Skipping S3 key ${Key} as it resolves to a directory.`);
+            continue;
+        }
+
+        // Create necessary subdirectories
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+
+        // Download and save the file
+        console.log(`Downloading ${Key} to ${localPath}`);
+        await downloadFileFromS3(Key, localPath);
+    }
+
+    console.log(`Restored session directory ${localDir} from S3.`);
+};
+
 // Download an individual file
 const downloadFileFromS3 = async (key, localPath) => {
     const command = new GetObjectCommand({
@@ -147,6 +207,43 @@ const deleteFromS3 = async (prefix) => {
     console.log(`Deleted all objects with prefix ${prefix} from S3.`);
 };
 
+const watchAndUploadSession = (userId) => {
+    const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
+    const sessionPrefix = `wwebjs_auth/session-${userId}/`;
+
+    const watcher = chokidar.watch(sessionDir, { persistent: true });
+
+    watcher.on('change', async (filePath) => {
+        const relativePath = path.relative(sessionDir, filePath);
+        const s3Key = `${sessionPrefix}${relativePath}`;
+
+        console.log(`File changed: ${filePath}, uploading to S3 as ${s3Key}`);
+        const fileContent = fs.readFileSync(filePath);
+        await uploadToS3(s3Key, fileContent);
+    });
+
+    watcher.on('add', async (filePath) => {
+        const relativePath = path.relative(sessionDir, filePath);
+        const s3Key = `${sessionPrefix}${relativePath}`;
+
+        console.log(`New file detected: ${filePath}, uploading to S3 as ${s3Key}`);
+        const fileContent = fs.readFileSync(filePath);
+        await uploadToS3(s3Key, fileContent);
+    });
+
+    watcher.on('unlink', async (filePath) => {
+        const relativePath = path.relative(sessionDir, filePath);
+        const s3Key = `${sessionPrefix}${relativePath}`;
+
+        console.log(`File deleted: ${filePath}, removing from S3 as ${s3Key}`);
+        await deleteFromS3(s3Key);
+    });
+
+    console.log(`Watching session directory for user ${userId}.`);
+};
+
+
+
 // Initialize WhatsApp Client
 const initializeClient = async (userId, res) => {
     const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
@@ -167,41 +264,23 @@ const initializeClient = async (userId, res) => {
 
     clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
 
+    client.on('ready', async () => {
+        console.log(`Client for user ${userId} is ready.`);
+        clients[userId].isReady = true;
+
+        // Upload the full session directory to S3
+        watchAndUploadSession(userId);
+        console.log(`Uploading session directory for user ${userId} to S3.`);
+        await uploadDirectoryToS3(sessionDir, sessionPrefix);
+        console.log(`Session directory for user ${userId} uploaded to S3.`);
+    });
+
     client.on('qr', async (qr) => {
         console.log(`QR Code received for user ${userId}`);
         const qrCodeUrl = await qrcode.toDataURL(qr);
         clients[userId].qrCode = qrCodeUrl;
         clients[userId].qrGeneratedAt = Date.now();
         if (res) res.json({ qr: qrCodeUrl });
-    });
-
-    client.on('ready', async () => {
-        console.log(`Client for user ${userId} is ready.`);
-        clients[userId].isReady = true;
-
-        const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
-        
-
-        console.log(`Checking session directory: ${sessionDir}`);
-        if (fs.existsSync(sessionDir)) {
-            console.log(`Session directory contents for user ${userId}:`, fs.readdirSync(sessionDir));
-        } else {
-            console.log(`Session directory for user ${userId} does not exist.`);
-        }
-
-        const watcher = chokidar.watch(sessionDir, { persistent: true });
-
-        watcher.on('add', async (path) => {
-            console.log(`Detected new session file for user ${userId}: ${path}`);
-            const sessionData = fs.readFileSync(path);
-            await uploadToS3(`${sessionPrefix}`, sessionData);
-            console.log(`Session data for user ${userId} uploaded to S3.`);
-            watcher.close(); // Stop watching after the file is found and uploaded
-        });
-
-        watcher.on('error', (error) => {
-            console.error(`Error watching sessionDir for user ${userId}:`, error);
-        });
     });
 
 
