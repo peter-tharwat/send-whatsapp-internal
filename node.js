@@ -30,6 +30,73 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 
+const uploadAuthFilesToS3 = async (localDir, s3Prefix) => {
+    const items = fs.readdirSync(localDir, { withFileTypes: true });
+
+    for (const item of items) {
+        const localPath = path.join(localDir, item.name);
+        const s3Key = `${s3Prefix}${item.name}`;
+
+        if (item.isDirectory()) {
+            // Skip cache and unnecessary folders
+            if (item.name.toLowerCase().includes('cache')) {
+                console.log(`Skipping cache folder: ${localPath}`);
+                continue;
+            }
+
+            // Recursively handle subdirectories
+            await uploadAuthFilesToS3(localPath, `${s3Key}/`);
+        } else {
+            // Only upload necessary files
+            if (!['auth', 'session.auth', 'creds.json'].includes(item.name)) {
+                console.log(`Skipping unnecessary file: ${localPath}`);
+                continue;
+            }
+
+            // Upload file
+            const fileContent = fs.readFileSync(localPath);
+            const command = new PutObjectCommand({
+                Bucket: process.env.AWS_BUCKET_NAME,
+                Key: s3Key,
+                Body: fileContent,
+            });
+            await s3.send(command);
+            console.log(`Uploaded ${s3Key} to S3.`);
+        }
+    }
+};
+const restoreAuthFilesFromS3 = async (prefix, localDir) => {
+    const listCommand = new ListObjectsV2Command({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Prefix: prefix,
+    });
+
+    const listedObjects = await s3.send(listCommand);
+
+    if (!listedObjects.Contents || listedObjects.Contents.length === 0) {
+        console.warn(`No files found under S3 prefix ${prefix}`);
+        return;
+    }
+
+    fs.mkdirSync(localDir, { recursive: true });
+
+    for (const { Key } of listedObjects.Contents) {
+        const relativePath = Key.replace(prefix, '');
+        const localPath = path.join(localDir, relativePath);
+
+        // Download only necessary files
+        if (!['auth', 'session.auth', 'creds.json'].includes(path.basename(Key))) {
+            console.log(`Skipping unnecessary file: ${Key}`);
+            continue;
+        }
+
+        console.log(`Downloading ${Key} to ${localPath}`);
+        await downloadFileFromS3(Key, localPath);
+    }
+
+    console.log(`Restored authentication files to ${localDir}.`);
+};
+
 const uploadDirectoryToS3 = async (localDir, s3Prefix) => {
     const items = fs.readdirSync(localDir, { withFileTypes: true });
 
@@ -219,13 +286,13 @@ const watchAndUploadSession = (userId) => {
 // Initialize WhatsApp Client
 const initializeClient = async (userId, res) => {
     const sessionDir = path.resolve(`.wwebjs_auth/session-${userId}`);
-    
-    const sessionPrefix = `./wwebjs_auth/session-${userId}/`;
+    const sessionPrefix = `wwebjs_auth/session-${userId}/`;
 
-    // Download session data from S3
-    console.log(`Restoring session for user ${userId} from S3.`);
-    await restoreDirectoryFromS3(sessionPrefix, sessionDir);
+    // Restore necessary authentication files from S3
+    console.log(`Restoring authentication files for user ${userId} from S3.`);
+    await restoreAuthFilesFromS3(sessionPrefix, sessionDir);
 
+    // Initialize the client with the restored session
     const client = new Client({
         authStrategy: new LocalAuth({ clientId: userId, dataPath: path.resolve('.wwebjs_auth') }),
         puppeteer: {
@@ -236,17 +303,6 @@ const initializeClient = async (userId, res) => {
 
     clients[userId] = { client, isReady: false, qrCode: null, qrGeneratedAt: null };
 
-    client.on('ready', async () => {
-        console.log(`Client for user ${userId} is ready.`);
-        clients[userId].isReady = true;
-
-        // Upload the full session directory to S3
-        watchAndUploadSession(userId);
-        console.log(`Uploading session directory for user ${userId} to S3.`);
-        await uploadDirectoryToS3(sessionDir, sessionPrefix);
-        console.log(`Session directory for user ${userId} uploaded to S3.`);
-    });
-
     client.on('qr', async (qr) => {
         console.log(`QR Code received for user ${userId}`);
         const qrCodeUrl = await qrcode.toDataURL(qr);
@@ -255,6 +311,15 @@ const initializeClient = async (userId, res) => {
         if (res) res.json({ qr: qrCodeUrl });
     });
 
+    client.on('ready', async () => {
+        console.log(`Client for user ${userId} is ready.`);
+        clients[userId].isReady = true;
+
+        // Optional: Upload authentication files to S3 after the client is ready
+        console.log(`Uploading authentication files for user ${userId} to S3.`);
+        await uploadAuthFilesToS3(sessionDir, sessionPrefix);
+        console.log(`Authentication files for user ${userId} uploaded to S3.`);
+    });
 
     client.initialize();
 };
