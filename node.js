@@ -39,7 +39,7 @@ const uploadAuthFilesToS3 = async (localDir, s3Prefix) => {
 
         if (item.isDirectory()) {
             // Skip cache and unnecessary folders
-            if (item.name.toLowerCase().includes('cache')) {
+            if (item.name.toLowerCase().includes('cache') || item.name.toLowerCase().includes('Cache')) {
                 console.log(`Skipping cache folder: ${localPath}`);
                 continue;
             }
