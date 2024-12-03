@@ -117,43 +117,6 @@ const downloadFileFromS3 = async (key, localPath) => {
     }
 };
 
-const restoreDirectoryFromS3 = async (prefix, localDir) => {
-    const listCommand = new ListObjectsV2Command({
-        Bucket: process.env.AWS_BUCKET_NAME,
-        Prefix: prefix,
-    });
-
-    const listedObjects = await s3.send(listCommand);
-
-    if (!listedObjects.Contents || listedObjects.Contents.length === 0) {
-        console.warn(`No files found under S3 prefix ${prefix}`);
-        return;
-    }
-
-    // Ensure the local directory exists
-    fs.mkdirSync(localDir, { recursive: true });
-
-    for (const { Key } of listedObjects.Contents) {
-        const relativePath = Key.replace(prefix, ''); // Remove prefix to get relative file path
-        const localPath = path.join(localDir, relativePath);
-
-        if (!relativePath) {
-            console.warn(`Skipping S3 key ${Key} as it resolves to a directory.`);
-            continue;
-        }
-
-        // Create necessary subdirectories
-        fs.mkdirSync(path.dirname(localPath), { recursive: true });
-
-        // Download and save the file
-        console.log(`Downloading ${Key} to ${localPath}`);
-        await downloadFileFromS3(Key, localPath);
-    }
-
-    console.log(`Restored session directory ${localDir} from S3.`);
-};
-
-
 
 
 // Helper Functions for S3 Operations
