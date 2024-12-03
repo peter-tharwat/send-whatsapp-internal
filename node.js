@@ -35,14 +35,14 @@ const uploadDirectoryToS3 = async (localDir, s3Prefix) => {
 
     for (const item of items) {
         const localPath = path.join(localDir, item.name);
-        const s3Key = `${s3Prefix}${item.name}`;
+        const s3Key = `${prefix}${item.name}`.replace(/\/$/, '');
 
         if (item.isDirectory()) {
             // Recursively handle subdirectories
             await uploadDirectoryToS3(localPath, `${s3Key}/`);
         } else {
             // Upload file
-            const fileContent = fs.readFileSync(localPath);
+            const fileContent = Buffer.from(fs.readFileSync(localPath));
             const command = new PutObjectCommand({
                 Bucket: process.env.AWS_BUCKET_NAME,
                 Key: s3Key,
@@ -182,7 +182,11 @@ const watchAndUploadSession = (userId) => {
         const s3Key = `${sessionPrefix}${relativePath}`;
 
         console.log(`File changed: ${filePath}, uploading to S3 as ${s3Key}`);
-        const fileContent = fs.readFileSync(filePath);
+        const fileContent = fs.readFileSync(localPath);
+        if (!fileContent || fileContent.length === 0) {
+            console.error(`File content is empty for ${localPath}`);
+            return;
+        }
         await uploadToS3(s3Key, fileContent);
     });
 
@@ -191,7 +195,11 @@ const watchAndUploadSession = (userId) => {
         const s3Key = `${sessionPrefix}${relativePath}`;
 
         console.log(`New file detected: ${filePath}, uploading to S3 as ${s3Key}`);
-        const fileContent = fs.readFileSync(filePath);
+        const fileContent = fs.readFileSync(localPath);
+        if (!fileContent || fileContent.length === 0) {
+            console.error(`File content is empty for ${localPath}`);
+            return;
+        }
         await uploadToS3(s3Key, fileContent);
     });
 
